@@ -1,0 +1,262 @@
+---
+title: "Untitled"
+output: html_document
+date: "2025-04-16"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+#Load in packages and read the data
+```{r}
+library(igraph)
+library(dplyr)
+ally = read.csv("BACRIM2020_Alliances.csv")
+rival = read.csv("BACRIM2020_Rivals.csv")
+node_attrs = read.csv("BACRIM2020_Nodes.csv")
+```
+
+#Clean the data
+```{r}
+#Function to normalize and deduplicate edges
+clean_network <- function(df) {
+  df_clean <- df %>%
+    mutate(
+      node_min = pmin(as.character(Node), as.character(RNode)),
+      node_max = pmax(as.character(Node), as.character(RNode))
+    ) %>%
+    group_by(node_min, node_max) %>%
+    summarise(
+      weight = sum(weight, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    rename(Node = node_min, RNode = node_max)
+
+  return(df_clean)
+}
+
+#Cleaned datasets
+clean_alliances <- clean_network(ally)
+clean_rivals <- clean_network(rival)
+
+#View cleaned data
+head(clean_alliances)
+head(clean_rivals)
+```
+
+
+#Create graph objects and match node short_names to the node_id
+```{r}
+g_alliances <- graph_from_data_frame(d = clean_alliances[, c("Node", "RNode", "weight")], directed = FALSE) #Graph is undirected to show community structure
+g_rivals <- graph_from_data_frame(d = clean_rivals[, c("Node", "RNode", "weight")], directed = FALSE) #graph is undirected to show community structure
+
+
+V(g_alliances)$short_name <- node_attrs$ShortName[match(V(g_alliances)$name, node_attrs$Node)] #Create new vertex attribute short name, then. Select the short name attr from the node attr df, and then match the Vertex attr name (which is just the Node Id) with the Node attribute from the node_attr df
+layout_ally <- layout_nicely(g_alliances) #Create large graph layout for the g_alliance 
+
+plot(g_alliances,
+     main = "BACRIM 2020 Alliance Network",
+     vertex.label = V(g_alliances)$short_name,
+     vertex.label.cex = 0.5,  # Try even 0.3 for big graphs
+     vertex.size = 5,
+     edge.width = (E(g_alliances)$weight),
+     edge.color = "green", layout = layout_ally)
+
+
+V(g_rivals)$short_name <- node_attrs$ShortName[match(V(g_rivals)$name, node_attrs$Node)]#Create new vertex attribute short name, then. Select the short name attr from the node attr df, and then match the Vertex attr name (which is just the Node Id) with the Node attribute from the node_attr df
+
+layout_rival = layout_nicely(g_rivals)
+plot(g_rivals,
+     main = "BACRIM 2020 Rivalry Network",
+     vertex.label = V(g_rivals)$short_name,
+     vertex.label.cex = 0.5,  
+     vertex.size = 5,
+     edge.width = E(g_rivals)$weight,
+     edge.color = "red", layout = layout_rival)
+```
+
+#General statisitics of g_alliance graphs
+```{r}
+vcount(g_alliances)#Vertices in alliance g
+vcount(g_rivals)#Vertices in rival g
+
+ecount(g_alliances)#Edges in the alliance g
+ecount(g_rivals)# Edges in the Rivals g
+```
+
+
+#Calculating the correlation between degree of alliances with degree of rivalries
+```{r}
+alliance_deg = (data.frame(degree(g_alliances)))
+rival_deg = (data.frame(degree(g_rivals)))
+
+merged_df <- merge(alliance_deg, rival_deg, by = "row.names", all.x = TRUE)
+merged_df[is.na(merged_df)] = 0 
+
+cor(merged_df[,2:3])
+```
+#Community structure of the alliance graph
+```{r}
+ally_com_struc = cluster_louvain(g_alliances) #In order to show community structure, graph has to be undirected
+set.seed(1236) #This is the seed we are using for plotting
+plot(ally_com_struc, g_alliances, vertex.label = V(g_alliances)$short_name, vertex.label.cex = 0.4, layout = layout_ally)
+
+rival_com_struc = cluster_louvain(g_rivals) #In order to show community structure, graph has to be undirected
+set.seed(1236) #This is the seed we are using for plotting
+plot(rival_com_struc, g_rivals, vertex.label = V(g_rivals)$short_name, vertex.label.cex = 0.4, layout = layout_rival)
+
+length(ally_com_struc) #THis is the number of unique communities in the ally graph
+length(rival_com_struc)  #THis is the number of unique communities in the rival graph
+```
+
+#Calculating the homophility of the graphs
+```{r}
+assortativity_degree(g_alliances)
+assortativity_degree(g_rivals)
+```
+
+#Calculating the constraint of the graphs (with histogram and mean value for each graph)
+```{r}
+hist(constraint(g_alliances))
+hist(constraint(g_rivals))
+
+cat('mean constraint in alliance network', mean(constraint(g_alliances)), "\n")
+cat('mean constraint in rival network', mean(constraint(g_rivals)))
+```
+
+
+```{r}
+#These packages are needed for the brokerage code to run
+library(statnet)
+install.packages("intergraph", dependencies = TRUE) #This package is neccessary to convert from igraph object to statnet
+library(intergraph)
+```
+
+
+#Calculating Brokerage for alliance network
+```{r}
+net_ally <- asNetwork(g_alliances)  # Convert igraph network into an statnet object
+brokerage(net_ally, cl=get.vertex.attribute(net_ally, "party"))$raw.nli
+
+barplot(brokerage(net_ally, cl=get.vertex.attribute(net_ally, "party"))$raw.nli)
+```
+
+#Calculating Brokerage for rivals network
+```{r}
+net_rivals <- asNetwork(g_rivals)  # Convert igraph network into an statnet object
+brokerage(net_rivals, cl=get.vertex.attribute(net_rivals, "party"))$raw.nli
+
+barplot(brokerage(net_rivals, cl=get.vertex.attribute(net_rivals, "party"))$raw.nli
+)
+```
+
+
+#Calculating Centrality Measures and putting them into a table
+```{r}
+#Function to compute centralities
+centralities <- function(g) {
+  list(
+    degree = degree(g),
+    closeness = closeness(g),
+    betweenness = betweenness(g),
+    eigenvector = eigen_centrality(g)$vector
+  )
+}
+```
+
+
+```{r}
+#Compute centralities
+centralities_allies <- centralities(g_alliances)
+centralities_rivals <- centralities(g_rivals)
+```
+
+
+```{r}
+#Function to compute correlation matrix
+correlations <- function(cens) {
+  data.frame(
+    Degree_Closeness = cor(cens$degree, cens$closeness),
+    Degree_Betweenness = cor(cens$degree, cens$betweenness),
+    Degree_Eigenvector = cor(cens$degree, cens$eigenvector),
+    Closeness_Betweenness = cor(cens$closeness, cens$betweenness),
+    Closeness_Eigenvector = cor(cens$closeness, cens$eigenvector),
+    Betweenness_Eigenvector = cor(cens$betweenness, cens$eigenvector)
+  )
+}
+
+#Compute correlations
+correlations_allies <- correlations(centralities_allies)
+correlations_rivals <- correlations(centralities_rivals)
+
+#Summary comparison table
+summary_table <- data.frame(
+  Metric = c(
+    "Number of Nodes",
+    "Number of Edges",
+    "Avg Degree",
+    "Max Degree",
+    "Avg Closeness Centrality",
+    "Avg Betweenness Centrality",
+    "Avg Eigenvector Centrality",
+    "Degree vs Closeness Corr",
+    "Degree vs Betweenness Corr",
+    "Degree vs Eigenvector Corr",
+    "Closeness vs Betweenness Corr",
+    "Closeness vs Eigenvector Corr",
+    "Betweenness vs Eigenvector Corr"
+  ),
+  Alliance = c(
+    vcount(g_alliances),
+    ecount(g_alliances),
+    mean(centralities_allies$degree),
+    max(centralities_allies$degree),
+    mean(centralities_allies$closeness),
+    mean(centralities_allies$betweenness),
+    mean(centralities_allies$eigenvector),
+    correlations_allies$Degree_Closeness,
+    correlations_allies$Degree_Betweenness,
+    correlations_allies$Degree_Eigenvector,
+    correlations_allies$Closeness_Betweenness,
+    correlations_allies$Closeness_Eigenvector,
+    correlations_allies$Betweenness_Eigenvector
+  ),
+  Rivalry = c(
+    vcount(g_rivals),
+    ecount(g_rivals),
+    mean(centralities_rivals$degree),
+    max(centralities_rivals$degree),
+    mean(centralities_rivals$closeness),
+    mean(centralities_rivals$betweenness),
+    mean(centralities_rivals$eigenvector),
+    correlations_rivals$Degree_Closeness,
+    correlations_rivals$Degree_Betweenness,
+    correlations_rivals$Degree_Eigenvector,
+    correlations_rivals$Closeness_Betweenness,
+    correlations_rivals$Closeness_Eigenvector,
+    correlations_rivals$Betweenness_Eigenvector
+  )
+)
+
+print(summary_table)
+```
+
+
+```{r}
+#Triad Census
+triads_allies <- triad_census(as.directed(g_alliances, mode = "mutual"))
+triads_rivals <- triad_census(as.directed(g_rivals, mode = "mutual"))
+
+#Combine triads into a table
+library(tibble)
+triads_table <- rbind(
+  Alliance = triads_allies,
+  Rivalry = triads_rivals
+)
+
+print(triads_table)
+
+```
+
